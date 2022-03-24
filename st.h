@@ -95,6 +95,7 @@ int ttynew(const char *, char *, const char *, char **);
 size_t ttyread(void);
 void ttyresize(int, int);
 void ttywrite(const char *, size_t, int);
+void tfulldirt(void);
 
 void resettitle(void);
 
@@ -123,6 +124,6 @@ extern int allowaltscreen;
 extern int allowwindowops;
 extern char *termname;
 extern unsigned int tabspaces;
-extern unsigned int defaultfg;
-extern unsigned int defaultbg;
-extern unsigned int defaultcs;
+extern const unsigned int defaultfg;
+extern const unsigned int defaultbg;
+extern const unsigned int defaultcs;

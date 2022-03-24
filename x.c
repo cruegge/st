@@ -14,6 +14,7 @@
 #include <X11/keysym.h>
 #include <X11/Xft/Xft.h>
 #include <X11/XKBlib.h>
+#include <X11/Xresource.h>
 
 char *argv0;
 #include "arg.h"
@@ -44,6 +45,19 @@ typedef struct {
 	signed char appkey;    /* application keypad */
 	signed char appcursor; /* application cursor */
 } Key;
+
+/* Xresources preferences */
+enum resource_type {
+	STRING = 0,
+	INTEGER = 1,
+	FLOAT = 2
+};
+
+typedef struct {
+	char *name;
+	enum resource_type type;
+	void *dst;
+} ResourcePref;
 
 /* X modifiers */
 #define XK_ANY_MOD    UINT_MAX
@@ -93,7 +107,8 @@ typedef struct {
 	Window win;
 	Drawable buf;
 	GlyphFontSpec *specbuf; /* font spec buffer used for rendering */
-	Atom xembed, wmdeletewin, netwmname, netwmiconname, netwmpid;
+	Atom xembed, wmdeletewin, netwmname, netwmiconname, netwmpid, stscheme, utf8_string;
+	XrmDatabase xrmdb;
 	struct {
 		XIM xim;
 		XIC xic;
@@ -185,6 +200,7 @@ static void mousesel(XEvent *, int);
 static void mousereport(XEvent *);
 static char *kmap(KeySym, uint);
 static int match(uint, uint);
+void scheme_init(void);
 
 static void run(void);
 static void usage(void);
@@ -251,6 +267,8 @@ static char *opt_io    = NULL;
 static char *opt_line  = NULL;
 static char *opt_name  = NULL;
 static char *opt_title = NULL;
+static char *opt_geom = NULL;
+static char *opt_scheme = NULL;
 
 static int oldbutton = 3; /* button event on startup: 3 = release */
 
@@ -497,12 +515,27 @@ propnotify(XEvent *e)
 {
 	XPropertyEvent *xpev;
 	Atom clipboard = XInternAtom(xw.dpy, "CLIPBOARD", 0);
+	ulong nitems, ofs, rem;
+	int format;
+	uchar *data;
+	Atom type = None;
 
 	xpev = &e->xproperty;
 	if (xpev->state == PropertyNewValue &&
 			(xpev->atom == XA_PRIMARY ||
 			 xpev->atom == clipboard)) {
 		selnotify(e);
+	} else if (xpev->atom == xw.stscheme) {
+		if (XGetWindowProperty(xw.dpy, xw.win, xw.stscheme, 0, BUFSIZ/4, False,
+				xw.utf8_string, &type, &format, &nitems, &rem, &data)) {
+			return;
+		}
+		free(scheme);
+		scheme = strdup(data);
+		XFree(data);
+		scheme_init();
+		xloadcols();
+		tfulldirt();
 	}
 }
 
@@ -534,28 +567,7 @@ selnotify(XEvent *e)
 			return;
 		}
 
-		if (e->type == PropertyNotify && nitems == 0 && rem == 0) {
-			/*
-			 * If there is some PropertyNotify with no data, then
-			 * this is the signal of the selection owner that all
-			 * data has been transferred. We won't need to receive
-			 * PropertyNotify events anymore.
-			 */
-			MODBIT(xw.attrs.event_mask, 0, PropertyChangeMask);
-			XChangeWindowAttributes(xw.dpy, xw.win, CWEventMask,
-					&xw.attrs);
-		}
-
 		if (type == incratom) {
-			/*
-			 * Activate the PropertyNotify events so we receive
-			 * when the selection owner does send us the next
-			 * chunk of data.
-			 */
-			MODBIT(xw.attrs.event_mask, 1, PropertyChangeMask);
-			XChangeWindowAttributes(xw.dpy, xw.win, CWEventMask,
-					&xw.attrs);
-
 			/*
 			 * Deleting the property is the transfer start signal.
 			 */
@@ -1119,8 +1131,6 @@ xinit(int cols, int rows)
 	pid_t thispid = getpid();
 	XColor xmousefg, xmousebg;
 
-	if (!(xw.dpy = XOpenDisplay(NULL)))
-		die("can't open display\n");
 	xw.scr = XDefaultScreen(xw.dpy);
 	xw.vis = XDefaultVisual(xw.dpy, xw.scr);
 
@@ -1149,7 +1159,8 @@ xinit(int cols, int rows)
 	xw.attrs.bit_gravity = NorthWestGravity;
 	xw.attrs.event_mask = FocusChangeMask | KeyPressMask | KeyReleaseMask
 		| ExposureMask | VisibilityChangeMask | StructureNotifyMask
-		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask;
+		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask
+		| PropertyChangeMask;
 	xw.attrs.colormap = xw.cmap;
 
 	if (!(opt_embed && (parent = strtol(opt_embed, NULL, 0))))
@@ -1208,6 +1219,12 @@ xinit(int cols, int rows)
 	XChangeProperty(xw.dpy, xw.win, xw.netwmpid, XA_CARDINAL, 32,
 			PropModeReplace, (uchar *)&thispid, 1);
 
+	xw.utf8_string = XInternAtom(xw.dpy, "UTF8_STRING", 0);
+	xw.stscheme = XInternAtom(xw.dpy, "ST_SCHEME", False);
+	if (scheme)
+		XChangeProperty(xw.dpy, xw.win, xw.stscheme, xw.utf8_string, 8,
+				PropModeReplace, (uchar *)scheme, strlen(scheme));
+
 	win.mode = MODE_NUMLOCK;
 	resettitle();
 	xhints();
@@ -1218,7 +1235,7 @@ xinit(int cols, int rows)
 	clock_gettime(CLOCK_MONOTONIC, &xsel.tclick2);
 	xsel.primary = NULL;
 	xsel.clipboard = NULL;
-	xsel.xtarget = XInternAtom(xw.dpy, "UTF8_STRING", 0);
+	xsel.xtarget = xw.utf8_string;
 	if (xsel.xtarget == None)
 		xsel.xtarget = XA_STRING;
 }
@@ -1995,6 +2012,78 @@ run(void)
 	}
 }
 
+int
+resource_load(char *scheme, char *name, enum resource_type rtype, void *dst)
+{
+	char **sdst = dst;
+	int *idst = dst;
+	float *fdst = dst;
+
+	char fullname[256];
+	char fullclass[256];
+	char *type;
+	XrmValue ret;
+
+	if (scheme)
+		snprintf(fullname, sizeof(fullname), "%s.scheme.%s.%s",
+				opt_name ? opt_name : "st", scheme, name);
+	else
+		snprintf(fullname, sizeof(fullname), "%s.%s",
+				opt_name ? opt_name : "st", name);
+	snprintf(fullclass, sizeof(fullclass), "%s.%s",
+			opt_class ? opt_class : "St", name);
+	fullname[sizeof(fullname) - 1] = fullclass[sizeof(fullclass) - 1] = '\0';
+
+	XrmGetResource(xw.xrmdb, fullname, fullclass, &type, &ret);
+	if (ret.addr == NULL || strncmp("String", type, 64))
+		return 1;
+
+	switch (rtype) {
+	case STRING:
+		*sdst = ret.addr;
+		break;
+	case INTEGER:
+		*idst = strtoul(ret.addr, NULL, 10);
+		break;
+	case FLOAT:
+		*fdst = strtof(ret.addr, NULL);
+		break;
+	}
+	return 0;
+}
+
+void
+scheme_init(void)
+{
+	ResourcePref *p;
+
+	if (!scheme)
+		return;
+	for (p = scheme_resources; p < scheme_resources + LEN(scheme_resources); p++)
+		resource_load(scheme, p->name, p->type, p->dst);
+}
+
+void
+config_init(void)
+{
+	char *resm;
+	ResourcePref *p;
+
+	XrmInitialize();
+	resm = XResourceManagerString(xw.dpy);
+	if (!resm)
+		return;
+
+	xw.xrmdb = XrmGetStringDatabase(resm);
+	for (p = resources; p < resources + LEN(resources); p++)
+		resource_load(NULL, p->name, p->type, p->dst);
+
+	if (opt_scheme)
+		scheme = opt_scheme;
+	scheme = strdup(scheme);
+	scheme_init();
+}
+
 void
 usage(void)
 {
@@ -2030,8 +2119,7 @@ main(int argc, char *argv[])
 		opt_font = EARGF(usage());
 		break;
 	case 'g':
-		xw.gm = XParseGeometry(EARGF(usage()),
-				&xw.l, &xw.t, &cols, &rows);
+		opt_geom = EARGF(usage());
 		break;
 	case 'i':
 		xw.isfixed = 1;
@@ -2044,6 +2132,9 @@ main(int argc, char *argv[])
 		break;
 	case 'n':
 		opt_name = EARGF(usage());
+		break;
+	case 's':
+		opt_scheme = EARGF(usage());
 		break;
 	case 't':
 	case 'T':
@@ -2068,6 +2159,16 @@ run:
 
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");
+
+	if(!(xw.dpy = XOpenDisplay(NULL)))
+		die("Can't open display\n");
+
+	config_init();
+
+	if (opt_geom)
+		xw.gm = XParseGeometry(opt_geom,
+				&xw.l, &xw.t, &cols, &rows);
+
 	cols = MAX(cols, 1);
 	rows = MAX(rows, 1);
 	tnew(cols, rows);

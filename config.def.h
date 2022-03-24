@@ -8,6 +8,8 @@
 static char *font = "Liberation Mono:pixelsize=12:antialias=true:autohint=true";
 static int borderpx = 2;
 
+static char *scheme = "default";
+
 /*
  * What program is execed by st depends of these precedence rules:
  * 1: program passed with -e
@@ -129,10 +131,10 @@ static const char *colorname[] = {
  * Default colors (colorname index)
  * foreground, background, cursor, reverse cursor
  */
-unsigned int defaultfg = 258;
-unsigned int defaultbg = 259;
-unsigned int defaultcs = 256;
-static unsigned int defaultrcs = 257;
+const unsigned int defaultfg = 258;
+const unsigned int defaultbg = 259;
+const unsigned int defaultcs = 256;
+static const unsigned int defaultrcs = 257;
 
 /*
  * Default shape of cursor
@@ -162,6 +164,50 @@ static unsigned int mousebg = 0;
  * doesn't match the ones requested.
  */
 static unsigned int defaultattr = 11;
+
+/*
+ * Xresources preferences to load at startup
+ */
+ResourcePref resources[] = {
+		{ "font",         STRING,  &font },
+		{ "termname",     STRING,  &termname },
+		{ "shell",        STRING,  &shell },
+		{ "blinktimeout", INTEGER, &blinktimeout },
+		{ "bellvolume",   INTEGER, &bellvolume },
+		{ "tabspaces",    INTEGER, &tabspaces },
+		{ "borderpx",     INTEGER, &borderpx },
+		{ "cols",         INTEGER, &cols },
+		{ "rows",         INTEGER, &rows },
+		{ "cwscale",      FLOAT,   &cwscale },
+		{ "chscale",      FLOAT,   &chscale },
+		{ "scheme",       STRING,  &scheme },
+};
+
+/*
+ * Xresources preferences to load for scheme
+ */
+ResourcePref scheme_resources[] = {
+		{ "color0",       STRING,  &colorname[0] },
+		{ "color1",       STRING,  &colorname[1] },
+		{ "color2",       STRING,  &colorname[2] },
+		{ "color3",       STRING,  &colorname[3] },
+		{ "color4",       STRING,  &colorname[4] },
+		{ "color5",       STRING,  &colorname[5] },
+		{ "color6",       STRING,  &colorname[6] },
+		{ "color7",       STRING,  &colorname[7] },
+		{ "color8",       STRING,  &colorname[8] },
+		{ "color9",       STRING,  &colorname[9] },
+		{ "color10",      STRING,  &colorname[10] },
+		{ "color11",      STRING,  &colorname[11] },
+		{ "color12",      STRING,  &colorname[12] },
+		{ "color13",      STRING,  &colorname[13] },
+		{ "color14",      STRING,  &colorname[14] },
+		{ "color15",      STRING,  &colorname[15] },
+		{ "background",   STRING,  &colorname[defaultbg] },
+		{ "foreground",   STRING,  &colorname[defaultfg] },
+		{ "cursor",       STRING,  &colorname[defaultcs] },
+		{ "revcursor",    STRING,  &colorname[defaultrcs] },
+};
 
 /*
  * Force mouse select/shortcuts while mask is active (when MODE_MOUSE is set).
